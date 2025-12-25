@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>NSS Attendance</title>
+
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <!-- Font -->
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Icons -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+
+    <!-- Custom Config -->
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Outfit', 'sans-serif'],
+                    },
+                    colors: {
+                        primary: '#FF6B00', // NSS Orange
+                        dark: '#0F172A',
+                        card: 'rgba(30, 41, 59, 0.7)',
+                    }
+                }
+            }
+        }
+    </script>
+
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body class="bg-dark text-white min-h-screen relative overflow-hidden">
+
+    <!-- Background Decoration -->
+    <div class="fixed top-0 left-0 w-full h-full overflow-hidden -z-10 pointer-events-none">
+        <div
+            class="absolute top-[-10%] left-[-10%] w-[50%] h-[50%] bg-primary/20 rounded-full blur-[120px] animate-blob">
+        </div>
+        <div
+            class="absolute bottom-[-10%] right-[-10%] w-[50%] h-[50%] bg-blue-600/20 rounded-full blur-[120px] animate-blob animation-delay-2000">
+        </div>
+    </div>
+
+    <!-- Main Container -->
+    <div id="app" class="relative z-10 min-h-screen flex flex-col">
+
+        <!-- Header -->
+        <header
+            class="p-6 flex justify-between items-center backdrop-blur-md bg-dark/30 sticky top-0 z-50 border-b border-white/5">
+            <div class="flex items-center gap-3">
+                <div
+                    class="w-10 h-10 rounded-full flex items-center justify-center overflow-hidden bg-white/10 border border-white/10">
+                    <img src="nss_logo.png" alt="NSS Logo" class="w-full h-full object-cover">
+                </div>
+                <div>
+                    <h1 class="font-bold text-lg leading-tight">NSS IITP</h1>
+                    <p class="text-xs text-gray-400">Attendance Portal</p>
+                </div>
+            </div>
+            <button id="logoutBtn"
+                class="hidden w-10 h-10 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center transition-all backdrop-blur-sm border border-white/5">
+                <i class="fas fa-sign-out-alt text-gray-300"></i>
+            </button>
+        </header>
+
+        <!-- Content Area -->
+        <main class="flex-1 flex flex-col p-6 max-w-md mx-auto w-full justify-center">
+
+            <!-- Login View -->
+            <div id="loginView" class="fade-in space-y-6">
+                <div class="text-center space-y-2 mb-8">
+                    <h2
+                        class="text-3xl font-bold bg-gradient-to-br from-white to-gray-400 bg-clip-text text-transparent">
+                        Welcome Back</h2>
+                    <p class="text-gray-400">iOS User</p>
+                </div>
+
+                <div class="glass-card p-8 rounded-3xl border border-white/10 space-y-6 shadow-2xl">
+                    <div class="space-y-4">
+                        <div class="group relative">
+                            <i
+                                class="fas fa-id-card absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 group-focus-within:text-primary transition-colors"></i>
+                            <input type="text" id="rollNumber" placeholder="Roll Number (e.g. 2301CS01)"
+                                class="w-full bg-black/40 border border-white/10 rounded-xl py-4 pl-12 pr-4 text-white placeholder-gray-500 focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/50 transition-all">
+                        </div>
+                        <div class="group relative">
+                            <i class="fas fa-eye absolute right-4 top-1/2 -translate-y-1/2 text-gray-400 cursor-pointer hover:text-white transition-colors"
+                                id="togglePassword"></i>
+                            <i
+                                class="fas fa-lock absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 group-focus-within:text-primary transition-colors"></i>
+                            <input type="password" id="password" placeholder="Password"
+                                class="w-full bg-black/40 border border-white/10 rounded-xl py-4 pl-12 pr-4 text-white placeholder-gray-500 focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/50 transition-all">
+                        </div>
+                    </div>
+
+                    <button id="loginBtn"
+                        class="w-full bg-gradient-to-r from-primary to-orange-600 text-white font-semibold py-4 rounded-xl shadow-lg shadow-primary/25 active:scale-[0.98] transition-all hover:shadow-primary/40 flex items-center justify-center gap-2">
+                        <span>Authenticate</span>
+                        <i class="fas fa-arrow-right text-sm"></i>
+                    </button>
+                </div>
+
+                <p class="text-center text-xs text-gray-500">Restricted usage for iOS devices only.</p>
+            </div>
+
+            <!-- Scanner View -->
+            <div id="scannerView" class="hidden fade-in flex-col h-full">
+                <!-- User Info Card -->
+                <div
+                    class="glass-card px-6 py-3 rounded-full border border-white/10 flex items-center gap-4 mb-6 w-fit mx-auto bg-white/5">
+
+                    <div>
+                        <h3 id="userInfoDisplay" class="font-medium text-white text-sm">Loading...</h3>
+                    </div>
+
+                </div>
+
+                <!-- Scanner Area -->
+                <div class="flex-1 flex flex-col items-center justify-center relative min-h-[400px]">
+                    <div id="reader"
+                        class="w-full h-full rounded-3xl overflow-hidden shadow-2xl border border-white/10 relative bg-black/50">
+                    </div>
+
+                    <!-- Overlay Guide -->
+                    <div id="scanOverlay" class="absolute inset-0 pointer-events-none flex items-center justify-center">
+                        <div class="w-64 h-64 border-2 border-primary/80 rounded-3xl relative animate-pulse-slow">
+                            <div
+                                class="absolute top-0 left-0 w-6 h-6 border-t-4 border-l-4 border-primary -mt-1 -ml-1 rounded-tl-lg">
+                            </div>
+                            <div
+                                class="absolute top-0 right-0 w-6 h-6 border-t-4 border-r-4 border-primary -mt-1 -mr-1 rounded-tr-lg">
+                            </div>
+                            <div
+                                class="absolute bottom-0 left-0 w-6 h-6 border-b-4 border-l-4 border-primary -mb-1 -ml-1 rounded-bl-lg">
+                            </div>
+                            <div
+                                class="absolute bottom-0 right-0 w-6 h-6 border-b-4 border-r-4 border-primary -mb-1 -mr-1 rounded-br-lg">
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Status Text -->
+
+                </div>
+
+                <div class="mt-6 text-center">
+                    <p class="text-sm text-gray-400">Point camera at the Admin's QR Code</p>
+                    <p class="text-xs text-gray-600 mt-1">Ensure you are within 100m of the venue</p>
+                </div>
+            </div>
+
+        </main>
+    </div>
+
+    <!-- Loading Overlay -->
+    <div id="loader"
+        class="fixed inset-0 bg-dark/80 backdrop-blur-sm z-[100] hidden flex-col items-center justify-center fade-in">
+        <div class="w-16 h-16 border-4 border-primary/30 border-t-primary rounded-full animate-spin mb-4"></div>
+        <p id="loaderText" class="text-white font-medium tracking-wide">Processing...</p>
+    </div>
+
+    <!-- Toast Component -->
+    <div id="toast"
+        class="fixed top-24 left-1/2 -translate-x-1/2 w-[90%] max-w-sm p-4 rounded-2xl glass-card border border-white/10 transform -translate-y-full opacity-0 transition-all duration-300 z-[90] flex items-start gap-3 shadow-2xl">
+        <div id="toastIcon" class="w-8 h-8 rounded-full flex items-center justify-center shrink-0 mt-0.5"></div>
+        <div>
+            <h4 id="toastTitle" class="font-semibold text-sm"></h4>
+            <p id="toastMessage" class="text-xs text-gray-300 mt-0.5 leading-relaxed"></p>
+        </div>
+    </div>
+
+    <!-- Custom Modal (Moved outside Toast to prevent z-index/transform issues) -->
+    <div id="statusModal" class="fixed inset-0 z-[200] hidden flex items-center justify-center p-4">
+        <!-- Backdrop -->
+        <div class="absolute inset-0 bg-black/80 backdrop-blur-sm transition-opacity opacity-0" id="modalBackdrop">
+        </div>
+
+        <!-- Content -->
+        <div class="relative bg-gray-900 border border-white/10 rounded-3xl p-8 max-w-sm w-full text-center transform scale-95 opacity-0 transition-all duration-300 shadow-2xl"
+            id="modalContent">
+            <div id="modalIconBox"
+                class="w-20 h-20 rounded-full mx-auto flex items-center justify-center mb-6 shadow-lg shadow-black/50">
+                <i id="modalIcon" class="fas fa-check text-4xl"></i>
+            </div>
+
+            <h3 id="modalTitle" class="text-2xl font-bold text-white mb-2">Success</h3>
+            <p id="modalMessage" class="text-gray-400 leading-relaxed mb-8">Action completed successfully.</p>
+
+            <button id="modalBtn"
+                class="w-full py-3.5 rounded-2xl font-semibold text-white transition-all active:scale-[0.98] bg-gradient-to-r from-blue-600 to-indigo-600 shadow-lg shadow-blue-500/30 hover:shadow-blue-500/50">
+                Done
+            </button>
+        </div>
+    </div>
+
+    <!-- Scripts -->
+    <script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
+    <script type="module" src="app.js?v=25"></script>
+</body>
+
+</html>
