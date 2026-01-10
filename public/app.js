@@ -271,7 +271,14 @@ function onScanSuccess(decodedText, decodedResult) {
     // html5QrCode.pause(); // Removed to prevent UI freeze
 
     processAttendance(decodedText)
-        .then(() => {
+        .then((result) => {
+            // ERROR FIX: If result is false, it means we silently ignored a bad QR/frame.
+            // Reset immediately so we can try the next frame suitable.
+            if (result === false) {
+                isScanning = false;
+                return;
+            }
+
             setTimeout(() => {
                 isScanning = false;
                 // Resume flag only
@@ -299,12 +306,17 @@ async function processAttendance(qrText) {
     try {
         qrData = JSON.parse(qrText);
     } catch (e) {
-        throw new Error("Invalid QR Code format.");
+        // ERROR FIX: Silent fail for invalid JSON (e.g. partial scan, background text)
+        // Matches Android "silent retry" behavior
+        console.warn("Silently ignoring invalid QR format:", e);
+        return false;
     }
 
     // Validate Schema
     if (!qrData.sessionId || !qrData.timestamp || !qrData.validationToken) {
-        throw new Error("Incomplete QR Data.");
+        // ERROR FIX: Silent fail for non-attendance QRs
+        console.warn("Silently ignoring incomplete QR data");
+        return false;
     }
 
     // Validate Timestamp (8 seconds window to match Android)
@@ -331,14 +343,14 @@ async function processAttendance(qrText) {
     // 2.1 Device Reuse Check (Prevent Multi-Login Proxy)
     // ---------------------------------------------------------
     if (eventData.attendees && Array.isArray(eventData.attendees)) {
-        // NOTE: Android uses snake_case (@PropertyName), so we must check 'device_id'
-        const alreadyUsed = eventData.attendees.some(att => att.device_id === virtualDeviceId);
+        // NOTE: Use camelCase field names
+        const alreadyUsed = eventData.attendees.some(att => att.deviceId === virtualDeviceId);
 
         // Exception: If the SAME user is retrying, we don't block on device ID here. 
         // We let the "Attendance already marked" check (below) handle it for better UX.
         // We only block if device matches BUT user is different.
         const deviceUsedByOther = eventData.attendees.some(att =>
-            att.device_id === virtualDeviceId && att.roll_number !== currentRollNumber
+            att.deviceId === virtualDeviceId && att.rollNumber !== currentRollNumber
         );
 
         if (deviceUsedByOther) {
@@ -347,9 +359,7 @@ async function processAttendance(qrText) {
     }
 
     // Use stored location or fallback (simulated logic: assumes Admin set it)
-    // Use stored location or fallback (simulated logic: assumes Admin set it)
-    // NOTE: Android uses separate fields 'attendanceLocationLatitude' and 'attendanceLocationLongitude' (@PropertyName)
-    // It does NOT use a single 'locationGeoPoint' field.
+    // NOTE: Use camelCase field names matching Android
     if (eventData.attendanceLocationLatitude && eventData.attendanceLocationLongitude) {
         const dist = getDistanceFromLatLonInKm(
             position.coords.latitude, position.coords.longitude,
@@ -383,18 +393,18 @@ async function processAttendance(qrText) {
     // 3. Use WriteBatch for Atomic Updates
     const batch = writeBatch(db);
 
-    // NOTE: Must match Android 'AttendeeRecord' @PropertyName annotations (snake_case)
+    // NOTE: Must match Android 'AttendeeRecord' field names (camelCase)
     const attendeeData = {
-        roll_number: currentRollNumber,
+        rollNumber: currentRollNumber,
         name: currentUserName || "Unknown",
-        scan_timestamp: new Date(),
-        scanned_from: {
-            admin_roll_number: qrData.adminId,
-            admin_name: adminName
+        scanTimestamp: new Date(),
+        scannedFrom: {
+            adminRollNumber: qrData.adminId,
+            adminName: adminName
         },
-        device_id: virtualDeviceId,
-        scan_location: new GeoPoint(position.coords.latitude, position.coords.longitude),
-        is_manual_entry: false
+        deviceId: virtualDeviceId,
+        scanLocation: new GeoPoint(position.coords.latitude, position.coords.longitude),
+        manualEntry: false
     };
 
     // 3.1 Create Attendee Record
@@ -403,7 +413,7 @@ async function processAttendance(qrText) {
     // 3.2 Update Event (Atomic)
     batch.update(eventRef, {
         attendees: arrayUnion(attendeeData),
-        total_marked: increment(1)
+        totalMarked: increment(1)
     });
 
     // 3.3 Update User Stats
@@ -524,37 +534,84 @@ function deg2rad(deg) {
 }
 
 // ==========================================
-// 5. FINGERPRINTING LOGIC
+// 5. FINGERPRINTING LOGIC (STICKY UUID)
 // ==========================================
 
 function generateDeviceFingerprint() {
-    const nav = window.navigator;
-    const screen = window.screen;
+    return getStickyDeviceId();
+}
 
-    // Collect stable device characteristics
-    const components = [
-        nav.userAgent,                      // Browser & OS
-        nav.language,                       // Language
-        nav.platform,                       // OS Platform
-        nav.hardwareConcurrency,            // CPU Cores
-        nav.deviceMemory,                   // RAM (approx)
-        screen.colorDepth,                  // Color Depth
-        screen.width + 'x' + screen.height, // Screen Resolution
-        new Date().getTimezoneOffset(),     // Timezone
-        'web-ios-prefix'                    // Salt/Prefix
-    ];
+/**
+ * Gets or creates a persistent "Sticky" Device ID.
+ * Uses both localStorage and Cookies for redundancy.
+ * If one is cleared, it self-heals from the other.
+ */
+function getStickyDeviceId() {
+    const STORAGE_KEY = 'nss_device_uuid';
+    const COOKIE_NAME = 'nss_device_uuid';
+    const COOKIE_DAYS = 365;
 
-    // Filter out undefined/null values
-    const validComponents = components.filter(c => c !== undefined && c !== null);
+    // Helper to get cookie
+    function getCookie(name) {
+        const value = `; ${document.cookie}`;
+        const parts = value.split(`; ${name}=`);
+        if (parts.length === 2) return parts.pop().split(';').shift();
+        return null;
+    }
 
-    // Create a string from components
-    const fingerprintString = validComponents.join('|');
+    // Helper to set cookie
+    function setCookie(name, value, days) {
+        let expires = "";
+        if (days) {
+            const date = new Date();
+            date.setTime(date.getTime() + (days * 24 * 60 * 60 * 1000));
+            expires = "; expires=" + date.toUTCString();
+        }
+        document.cookie = name + "=" + (value || "") + expires + "; path=/; SameSite=Strict";
+    }
 
-    // Hash it
-    const hash = simpleHash(fingerprintString);
+    // Helper to generate UUID
+    function generateUUID() {
+        if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+            return crypto.randomUUID();
+        }
+        // Fallback for older browsers
+        return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
+            var r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
+            return v.toString(16);
+        });
+    }
 
-    // Return with safe prefix
-    return 'web-ios-' + hash;
+    // 1. Try to get from storage
+    let localId = localStorage.getItem(STORAGE_KEY);
+    let cookieId = getCookie(COOKIE_NAME);
+    let finalId = null;
+
+    // 2. Logic to Sync/Heal
+    if (localId && cookieId) {
+        // Best case: Both exist. Use local.
+        if (localId !== cookieId) {
+            // Weird mismatch? Trust local (arbitrary choice, but keeps it stable)
+            setCookie(COOKIE_NAME, localId, COOKIE_DAYS);
+        }
+        finalId = localId;
+    } else if (localId && !cookieId) {
+        // Cookie cleared? Heal it from local.
+        setCookie(COOKIE_NAME, localId, COOKIE_DAYS);
+        finalId = localId;
+    } else if (!localId && cookieId) {
+        // LocalStorage cleared? Heal it from cookie.
+        localStorage.setItem(STORAGE_KEY, cookieId);
+        finalId = cookieId;
+    } else {
+        // Both missing? New Device.
+        finalId = generateUUID();
+        localStorage.setItem(STORAGE_KEY, finalId);
+        setCookie(COOKIE_NAME, finalId, COOKIE_DAYS);
+    }
+
+    return 'web-uuid-' + finalId;
+}
 }
 
 // Simple string hashing function (DJB2 variant)
