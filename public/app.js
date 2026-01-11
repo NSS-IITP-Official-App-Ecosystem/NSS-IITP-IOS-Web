@@ -612,7 +612,6 @@ function getStickyDeviceId() {
 
     return 'web-uuid-' + finalId;
 }
-}
 
 // Simple string hashing function (DJB2 variant)
 function simpleHash(str) {
