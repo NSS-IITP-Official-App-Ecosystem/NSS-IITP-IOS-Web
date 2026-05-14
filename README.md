@@ -7,6 +7,7 @@
 [![HTML](https://img.shields.io/badge/Built%20with-HTML%2FJS-E34F26?logo=html5&logoColor=white)](https://developer.mozilla.org/en-US/docs/Web/HTML)
 [![Tailwind](https://img.shields.io/badge/Styled%20with-Tailwind%20CSS-06B6D4?logo=tailwindcss&logoColor=white)](https://tailwindcss.com/)
 [![Firebase](https://img.shields.io/badge/Backend-Firebase-FFCA28?logo=firebase&logoColor=black)](https://firebase.google.com/)
+[![Live Portal](https://img.shields.io/badge/Live%20Portal-nssiitp--app.web.app-FF6B00?logo=firebase&logoColor=white)](https://nssiitp-app.web.app)
 [![Main App](https://img.shields.io/badge/Main%20App-NSS--IITP--Official--App-7F52FF?logo=kotlin&logoColor=white)](https://github.com/NSS-IITP-Official-App-Ecosystem/NSS-IITP-Official-App)
 
 </div>
@@ -22,6 +23,8 @@ It gives iOS users a **browser-based QR scanner** that:
 - Activates the device camera to scan the admin's QR code
 - Verifies the user is **within 100m** of the venue via GPS
 - Submits attendance to the same Firebase backend as the Android app
+
+🔗 **Live:** [nssiitp-app.web.app](https://nssiitp-app.web.app)
 
 > ⚠️ **Restricted access** — this portal is for NSS IITP members only.
 
