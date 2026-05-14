@@ -1,0 +1,6 @@
+{
+  "projects": {
+    "default": "nssiitp-app",
+    "prod": "nssiitp-app"
+  }
+}
