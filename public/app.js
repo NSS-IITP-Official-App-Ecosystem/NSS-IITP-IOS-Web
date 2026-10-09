@@ -1,624 +1,541 @@
-import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
-import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
-import { getFirestore, doc, getDoc, updateDoc, setDoc, arrayUnion, increment, collection, serverTimestamp, GeoPoint, writeBatch } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore.js";
+/**
+ * NSS IIT Patna — iOS Web Portal (app_new.js)
+ *
+ * SECURITY MODEL (v2 — Full Server Proxy):
+ *   - This file contains ZERO direct Firestore reads or writes.
+ *   - Everything goes through ios_* Cloud Functions which use the Admin SDK.
+ *   - The client only exchanges: Auth tokens + Signed cryptographic challenges.
+ *   - All DB reads/writes, validation, and computation happen invisibly on the server.
+ *
+ * FLOW:
+ *   Login → ios_getDeviceBindChallenge → ios_bindDevice → ios_getProfile
+ *   Scan  → ios_getAttendanceChallenge → ios_markAttendance
+ */
 
-// ==========================================
-// 1. CONFIGURATION (USER MUST FILL THIS)
-// ==========================================
-const firebaseConfig = {
-    apiKey: "AIzaSyDWOk35Qtp7Dwrtip0zE8pQDbevLdhk704",
-    authDomain: "nssiitp-app.firebaseapp.com",
-    projectId: "nssiitp-app",
-    storageBucket: "nssiitp-app.firebasestorage.app",
-    messagingSenderId: "23318803",
-    appId: "1:23318803:web:9bc067213a5f6a7f61cae6",
-    measurementId: "G-J805ZLPK12"
-};
+import { initializeApp }       from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
+import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged, connectAuthEmulator }
+                               from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
+import { CONFIG }              from "./config.js";
+import { generatePDFReport }     from "./pdf_export.js";
+// NOTE: No Firestore import — the client never touches the database directly.
 
-// Initialize Firebase
-const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
-const db = getFirestore(app);
+// ============================================================
+// CONFIGURATION
+// ============================================================
+const firebaseApp = initializeApp(CONFIG.firebaseConfig);
+const auth        = getAuth(firebaseApp);
 
-// State
-let currentUser = null;
-let currentRollNumber = null;
-let currentUserName = null; // Store fetched name globally
-let html5QrCode = null;
-let isScanning = false;
-// Generate Device ID using Fingerprinting (Persists across Incognito/Clear Cache)
-let virtualDeviceId = generateDeviceFingerprint();
-console.log("Device Fingerprint:", virtualDeviceId);
-
-// DOM Elements
-const loginView = document.getElementById('loginView');
-const scannerView = document.getElementById('scannerView');
-const loginBtn = document.getElementById('loginBtn');
-const logoutBtn = document.getElementById('logoutBtn');
-const rollInput = document.getElementById('rollNumber');
-const passInput = document.getElementById('password');
-const loader = document.getElementById('loader');
-const togglePassword = document.getElementById('togglePassword');
-const modal = document.getElementById('statusModal');
-const modalBackdrop = document.getElementById('modalBackdrop');
-const modalContent = document.getElementById('modalContent');
-const modalIconBox = document.getElementById('modalIconBox');
-const modalIcon = document.getElementById('modalIcon');
-const modalTitle = document.getElementById('modalTitle');
-const modalMessage = document.getElementById('modalMessage');
-const modalBtn = document.getElementById('modalBtn');
-
-modalBtn.addEventListener('click', () => {
-    modalBackdrop.classList.remove('opacity-100');
-    modalContent.classList.remove('scale-100', 'opacity-100');
-    modalContent.classList.add('scale-95', 'opacity-0');
-    setTimeout(() => {
-        modal.classList.add('hidden');
-        if (html5QrCode && !isScanning) html5QrCode.resume();
-    }, 300);
-});
-
-function showModal(type, title, message) {
-    try {
-        if (!modal || !modalBackdrop || !modalContent) {
-            console.error("Modal elements not found!");
-            alert(`${title}: ${message}`);
-            return;
-        }
-
-        modal.classList.remove('hidden');
-        // Force reflow
-        void modal.offsetWidth;
-
-        modalBackdrop.classList.add('opacity-100');
-        modalContent.classList.remove('scale-95', 'opacity-0');
-        modalContent.classList.add('scale-100', 'opacity-100');
-
-        if (modalTitle) modalTitle.innerText = title;
-        if (modalMessage) modalMessage.innerText = message;
-
-        if (modalIconBox) {
-            modalIconBox.className = "w-20 h-20 rounded-full mx-auto flex items-center justify-center mb-6 shadow-lg shadow-black/50 transition-colors";
-
-            if (type === 'success') {
-                modalIconBox.classList.add('bg-green-500/20', 'text-green-500');
-                if (modalIcon) modalIcon.className = "fas fa-check text-4xl";
-            } else if (type === 'duplicate') {
-                modalIconBox.classList.add('bg-yellow-500/20', 'text-yellow-500');
-                if (modalIcon) modalIcon.className = "fas fa-hand-paper text-4xl";
-            } else {
-                modalIconBox.classList.add('bg-red-500/20', 'text-red-500');
-                if (modalIcon) modalIcon.className = "fas fa-times text-4xl";
-            }
-        }
-    } catch (e) {
-        console.error("Error showing modal:", e);
-        // Fallback to alert if modal fails
-        alert(`${title}\n${message}`);
-    }
+if (CONFIG.useEmulator) {
+    connectAuthEmulator(auth, CONFIG.authEmulatorUrl);
+    console.log("🔥 Connected to Firebase Auth Emulator");
 }
 
-// ==========================================
-// 2. AUTHENTICATION LOGIC
-// ==========================================
+const CF = CONFIG.cfUrl;
 
-// Toggle Password
-togglePassword.addEventListener('click', () => {
-    const type = passInput.getAttribute('type') === 'password' ? 'text' : 'password';
-    passInput.setAttribute('type', type);
-    togglePassword.classList.toggle('fa-eye');
-    togglePassword.classList.toggle('fa-eye-slash');
-});
 
-// Enforce iOS Access (with Debug Bypass)
+// ============================================================
+// APP STATE
+// ============================================================
+let currentUser       = null;
+let currentRollNumber = null;
+let currentUserName   = null;
+let html5QrCode       = null;
+let isScanning        = false;
+let profileData       = null; // Cached result from ios_getProfile
+
+// ============================================================
+// DOM REFERENCES
+// ============================================================
+const loginView     = document.getElementById("loginView");
+const scannerView   = document.getElementById("scannerView");
+const dashboardView = document.getElementById("dashboardView");
+const eventsView    = document.getElementById("eventsView");
+const topNav        = document.getElementById("topNav");
+const navScanner    = document.getElementById("navScanner");
+const navDashboard  = document.getElementById("navDashboard");
+const navSelector   = document.getElementById("navSelector");
+
+const cardSem1      = document.getElementById("card-sem1");
+const cardSem2      = document.getElementById("card-sem2");
+const eventsBackBtn = document.getElementById("eventsBackBtn");
+const eventsViewTitle     = document.getElementById("eventsViewTitle");
+const wingEventsContainer = document.getElementById("wingEventsContainer");
+const openEventsContainer = document.getElementById("openEventsContainer");
+
+const loginBtn      = document.getElementById("loginBtn");
+const logoutBtn     = document.getElementById("logoutBtn");
+const rollInput     = document.getElementById("rollNumber");
+const passInput     = document.getElementById("password");
+const loader        = document.getElementById("loader");
+const togglePass    = document.getElementById("togglePassword");
+const modal         = document.getElementById("statusModal");
+const modalBackdrop = document.getElementById("modalBackdrop");
+const modalContent  = document.getElementById("modalContent");
+const modalIconBox  = document.getElementById("modalIconBox");
+const modalIcon     = document.getElementById("modalIcon");
+const modalTitle    = document.getElementById("modalTitle");
+const modalMessage  = document.getElementById("modalMessage");
+const modalBtn      = document.getElementById("modalBtn");
+
+// ============================================================
+// 1. DEVICE RESTRICTION — iOS Only (UX gate)
+// ============================================================
 function checkDeviceRestriction() {
-    // 1. Standard User Agent Check
-    const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
-
-    // 2. iPads on iOS 13+ often report as "MacIntel" but have touch points
-    const isIPadOS = (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-
-    const urlParams = new URLSearchParams(window.location.search);
-    const isDebug = urlParams.get('debug_mode') === 'true';
-
-    // Allow if: (It is iOS OR It is iPadOS) OR (Debug Mode is ON)
+    const isIOS    = /iPhone|iPad|iPod/i.test(navigator.userAgent);
+    const isIPadOS = (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+    const isDebug  = new URLSearchParams(window.location.search).get("debug_mode") === "true";
     if (!(isIOS || isIPadOS) && !isDebug) {
-        // Clear entire body to prevent flashing of login screen
-        document.body.innerHTML = '';
-
-        // Show Restriction Screen
-        const restrictionDiv = document.createElement('div');
-        restrictionDiv.className = "flex flex-col items-center justify-center min-h-screen bg-gray-900 text-white p-6 text-center animate-fade-in";
-        restrictionDiv.innerHTML = `
-            <div class="w-24 h-24 bg-red-500/10 rounded-full flex items-center justify-center mb-6 border border-red-500/20 shadow-red-900/20 shadow-lg">
+        document.body.innerHTML = "";
+        const div = document.createElement("div");
+        div.className = "flex flex-col items-center justify-center min-h-screen bg-gray-900 text-white p-6 text-center";
+        div.innerHTML = `
+            <div class="w-24 h-24 bg-red-500/10 rounded-full flex items-center justify-center mb-6 border border-red-500/20">
                 <i class="fab fa-apple text-5xl text-red-500"></i>
             </div>
             <h1 class="text-3xl font-bold mb-3 tracking-tight">Device Restricted</h1>
-            <p class="text-gray-400 max-w-xs leading-relaxed">This portal is exclusively for iOS devices. Please use the Android App for other devices.</p>
-        `;
-        document.body.appendChild(restrictionDiv);
-
-        // Throw error to stop further script execution
+            <p class="text-gray-400 max-w-xs leading-relaxed">This portal is exclusively for iOS devices.</p>`;
+        document.body.appendChild(div);
         throw new Error("Access denied: Non-iOS device.");
     }
-
-    if (isDebug) {
-        showToast('success', 'Debug Mode', 'Device restrictions bypassed.');
-    }
+    if (isDebug) showToast("success", "Debug Mode", "Device restrictions bypassed.");
 }
-
-// Run protection immediately and on load
 checkDeviceRestriction();
 window.onload = checkDeviceRestriction;
 
-// Login Handler
-loginBtn.addEventListener('click', async () => {
+// ============================================================
+// 2. CRYPTO — RSA-PSS key pair in IndexedDB
+//    Private key NEVER leaves the browser.
+// ============================================================
+const IDB = { name: "nss_secure_store", store: "key_pairs", id: "ios_device_key_pair" };
+
+function openKeyStore() {
+    return new Promise((res, rej) => {
+        const r = indexedDB.open(IDB.name, 1);
+        r.onupgradeneeded = e => e.target.result.createObjectStore(IDB.store);
+        r.onsuccess = e => res(e.target.result);
+        r.onerror   = e => rej(e.target.error);
+    });
+}
+
+async function loadOrGenerateKeyPair() {
+    const db  = await openKeyStore();
+    const kp  = await new Promise((res, rej) => {
+        const tx = db.transaction(IDB.store, "readonly");
+        const r  = tx.objectStore(IDB.store).get(IDB.id);
+        r.onsuccess = () => res(r.result);
+        r.onerror   = () => rej(r.error);
+    });
+    if (kp) return kp;
+
+    const keyPair = await crypto.subtle.generateKey(
+        { name: "RSA-PSS", modulusLength: 2048, publicExponent: new Uint8Array([1,0,1]), hash: "SHA-256" },
+        false, ["sign", "verify"]
+    );
+    const tx2 = db.transaction(IDB.store, "readwrite");
+    tx2.objectStore(IDB.store).put(keyPair, IDB.id);
+    await new Promise((res, rej) => { tx2.oncomplete = res; tx2.onerror = rej; });
+    return keyPair;
+}
+
+async function exportPublicKeyPem(publicKey) {
+    const spki = await crypto.subtle.exportKey("spki", publicKey);
+    const b64  = btoa(String.fromCharCode(...new Uint8Array(spki)));
+    return `-----BEGIN PUBLIC KEY-----\n${b64.match(/.{1,64}/g).join("\n")}\n-----END PUBLIC KEY-----`;
+}
+
+async function signNonce(privateKey, nonce) {
+    const sig = await crypto.subtle.sign(
+        { name: "RSA-PSS", saltLength: 32 },
+        privateKey,
+        new TextEncoder().encode(nonce)
+    );
+    return btoa(String.fromCharCode(...new Uint8Array(sig)));
+}
+
+// ============================================================
+// 3. CLOUD FUNCTION CALLER
+//    Single function for all CF calls. No Firestore SDK needed.
+// ============================================================
+async function cf(name, body) {
+    const token = await currentUser.getIdToken(false);
+    const resp  = await fetch(`${CF}/${name}`, {
+        method:  "POST",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
+        body:    JSON.stringify(body)
+    });
+    const json = await resp.json().catch(() => ({ error: "Malformed server response" }));
+    if (!resp.ok) throw Object.assign(new Error(json.error || "Server error"), { status: resp.status });
+    return json;
+}
+
+// ============================================================
+// 4. DEVICE BINDING
+//    Bind this browser's public key to the backend.
+//    Uses ios_* functions — completely separate from Android binding.
+// ============================================================
+async function ensureIosDeviceBound() {
+    const kp = await loadOrGenerateKeyPair();
+
+    // Step 1: Get a nonce from the server
+    const { nonce }    = await cf("ios_getDeviceBindChallenge", { rollNumber: currentRollNumber });
+
+    // Step 2: Sign nonce with our private key (never leaves browser)
+    const signature    = await signNonce(kp.privateKey, nonce);
+
+    // Step 3: Send public key + signature to register
+    const publicKeyPem = await exportPublicKeyPem(kp.publicKey);
+    await cf("ios_bindDevice", { rollNumber: currentRollNumber, publicKeyPem, signatureBase64: signature });
+
+    console.log("[iOS Bind] Device successfully registered.");
+}
+
+// ============================================================
+// 5. AUTHENTICATION
+// ============================================================
+togglePass.addEventListener("click", () => {
+    const t = passInput.getAttribute("type") === "password" ? "text" : "password";
+    passInput.setAttribute("type", t);
+    togglePass.classList.toggle("fa-eye");
+    togglePass.classList.toggle("fa-eye-slash");
+});
+
+loginBtn.addEventListener("click", async () => {
     const roll = rollInput.value.trim().toUpperCase();
     const pass = passInput.value;
+    if (!roll || !pass) { showToast("error", "Missing Credentials", "Please enter both Roll Number and Password."); return; }
 
-    if (!roll || !pass) {
-        showToast('error', 'Missing Credentials', 'Please enter both Roll Number and Password.');
-        return;
-    }
-
-    showLoader(true, 'Verifying Access...');
-
+    showLoader(true, "Verifying Access...");
     try {
-        // 1. Check Allowlist
-        const allowRef = doc(db, "allowed_ios_users", roll);
-        const allowSnap = await getDoc(allowRef);
+        // The server checks the allowlist and identity — we just need Firebase Auth here.
+        // We still need to resolve the email to sign in, so we make ONE read to the
+        // public /users/{roll} document (which has allow get: if true in current rules).
+        // This is a read-only pre-auth step with no sensitive fields.
+        const resp = await fetch(
+            `${CONFIG.firestoreUrl}/users/${roll}`
+        );
+        if (!resp.ok) throw new Error("User not found. Check your Roll Number.");
+        const body  = await resp.json();
+        const fields = body.fields || {};
+        const email  = fields.instituteOutlookId?.stringValue || fields.email?.stringValue;
+        if (!email) throw new Error("Email not configured for this account.");
 
-        if (!allowSnap.exists()) {
-            throw new Error("Access Denied. Your Roll Number is not authorized for iOS Web Access.");
-        }
-
-        // 2. Fetch User Email from Firestore
-        const userRef = doc(db, "users", roll);
-        const userSnap = await getDoc(userRef);
-
-        if (!userSnap.exists()) {
-            throw new Error("User not found in database.");
-        }
-
-        const userData = userSnap.data();
-        const email = userData.instituteOutlookId || userData.email;
-
-        if (!email) {
-            throw new Error("Email not found for this user.");
-        }
-
-        // 3. Authenticate
         await signInWithEmailAndPassword(auth, email, pass);
-
-        // Success (onAuthStateChanged will handle UI switch)
         currentRollNumber = roll;
-        localStorage.setItem('nss_last_roll', roll);
-
-    } catch (error) {
-        console.error("Login Error:", error);
-        let msg = error.message;
-        if (error.code === 'auth/wrong-password') msg = "Invalid Password.";
-        showToast('error', 'Authentication Failed', msg);
+        localStorage.setItem("nss_last_roll", roll);
+    } catch (err) {
+        let msg = err.message;
+        if (err.code === "auth/wrong-password" || err.code === "auth/invalid-credential") msg = "Invalid password.";
+        showToast("error", "Authentication Failed", msg);
         showLoader(false);
     }
 });
 
-// Logout Handler
-logoutBtn.addEventListener('click', () => {
-    signOut(auth);
-    if (html5QrCode) html5QrCode.stop();
+logoutBtn.addEventListener("click", async () => {
+    await signOut(auth);
+    if (html5QrCode) { try { await html5QrCode.stop(); } catch (_) {} }
+    profileData = null;
 });
 
-// Auth State Monitor
+// Navigation Listeners
+navScanner.addEventListener("click", () => switchView("scanner"));
+navDashboard.addEventListener("click", () => switchView("dashboard"));
+const downloadPdfBtn = document.getElementById("downloadPdfBtn");
+if (downloadPdfBtn) downloadPdfBtn.addEventListener("click", () => {
+    generatePDFReport(profileData, currentEventsSemester, { showLoader, showToast });
+});
+
 onAuthStateChanged(auth, async (user) => {
     showLoader(false);
     if (user) {
         currentUser = user;
-        // Try to recover roll number if page refreshed
-        if (!currentRollNumber) currentRollNumber = localStorage.getItem('nss_last_roll');
+        if (!currentRollNumber) currentRollNumber = localStorage.getItem("nss_last_roll");
 
-        showToast('success', 'Welcome', 'Ready to mark attendance.');
-        switchView('scanner');
-        initializeScanner();
+        logoutBtn.classList.remove("hidden");
 
-        // Update UI
-        let displayName = user.displayName;
-        if (!displayName || displayName === 'Student') {
-            try {
-                const userDoc = await getDoc(doc(db, "users", currentRollNumber));
-                if (userDoc.exists()) {
-                    displayName = userDoc.data().name || userDoc.data().displayName || 'Student';
-                }
-            } catch (e) {
-                console.warn("Failed to fetch user name", e);
+        try {
+            // Bind device first (required before any attendance or profile call)
+            showLoader(true, "Securing device...");
+            await ensureIosDeviceBound();
+        } catch (e) {
+            // If already bound, the server just issues a new challenge.
+            // If the server returns 403 "already bound", it is fine — we clear and retry.
+            if (e.message && e.message.includes("already bound")) {
+                // This shouldn't happen since ios_bindDevice allows re-binding.
+                // Log and continue.
+                console.warn("[iOS Bind] Already bound (unexpected). Continuing.");
+            } else {
+                showToast("error", "Device Setup Failed", e.message || "Could not secure this device.");
+                await signOut(auth);
+                return;
             }
         }
 
-        currentUserName = displayName || 'Student'; // Store for later use
-        document.getElementById('userInfoDisplay').innerText = `${displayName || 'Student'} • ${currentRollNumber}`;
-        logoutBtn.classList.remove('hidden');
+        // Load profile via server — no Firestore reads from client
+        showLoader(true, "Loading your profile...");
+        try {
+            profileData = await cf("ios_getProfile", { rollNumber: currentRollNumber });
+            currentUserName = profileData.name;
+            renderProfile(profileData);
+        } catch (e) {
+            console.warn("[Profile] Failed to load:", e.message);
+        }
+
+        document.getElementById("userInfoDisplay").innerText = `${currentUserName || "Student"} • ${currentRollNumber}`;
+        showLoader(false);
+        switchView("dashboard"); // Open dashboard by default
     } else {
-        currentUser = null;
-        currentRollNumber = null;
-        switchView('login');
-        logoutBtn.classList.add('hidden');
+        currentUser = currentRollNumber = currentUserName = profileData = null;
+        switchView("login");
+        logoutBtn.classList.add("hidden");
     }
 });
 
+// ============================================================
+// 6. PROFILE RENDERING
+//    All data comes pre-computed from ios_getProfile.
+//    Client does zero arithmetic.
+// ============================================================
+function renderProfile(p) {
+    const fmt  = h => { const n = Number(h); return isNaN(n) ? "0" : (n % 1 === 0 ? String(n) : n.toFixed(1)); };
+    const tryS = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
 
-// ==========================================
-// 3. SCANNER & LOCATION LOGIC
-// ==========================================
-
-function initializeScanner() {
-    if (html5QrCode) return;
-
-    html5QrCode = new Html5Qrcode("reader");
-    const config = { fps: 10, qrbox: { width: 250, height: 250 } };
-
-    html5QrCode.start({ facingMode: "environment" }, config, onScanSuccess)
-        .catch(err => {
-            console.error("Camera Error", err);
-            showToast('error', 'Camera Error', 'Please verify camera permissions.');
-        });
+    tryS("stat-sem1",       `${fmt(p.sem1Hours)} / ${fmt(p.sem1TotalHours)}`);
+    tryS("stat-sem2",       `${fmt(p.sem2Hours)} / ${fmt(p.sem2TotalHours)}`);
+    tryS("stat-events",     `${p.eventsAttended} / ${p.totalRelevantEvents}`);
+    tryS("stat-total",      fmt(p.totalHours));
+    tryS("stat-wing-hours", fmt(p.wingHours));
+    tryS("stat-open-hours", fmt(p.openHours));
 }
 
-function onScanSuccess(decodedText, decodedResult) {
+// ============================================================
+// 6.5 EVENTS SCREEN
+// ============================================================
+cardSem1.addEventListener("click", () => openEventsScreen(1));
+cardSem2.addEventListener("click", () => openEventsScreen(2));
+eventsBackBtn.addEventListener("click", () => switchView("dashboard"));
+
+let currentEventsSemester = 1;
+
+function openEventsScreen(sem) {
+    if (!profileData) return;
+    currentEventsSemester = sem;
+    eventsViewTitle.innerText = `Semester ${sem} Events`;
+    switchView("events");
+    
+    const parseDate = (d) => {
+        if (!d) return 0;
+        const parts = d.split(/[-/]/);
+        if (parts.length >= 3) return parts[0].length === 4 ? new Date(parts[0], parts[1]-1, parts[2]).getTime() : new Date(parts[2], parts[1]-1, parts[0]).getTime();
+        const parsed = new Date(d).getTime();
+        return isNaN(parsed) ? 0 : parsed;
+    };
+    const sortFn = (a, b) => parseDate(b.date) - parseDate(a.date);
+    
+    const wingEvs = (profileData.wingEvents || []).filter(e => e.semester === sem).sort(sortFn);
+    renderEventList(wingEventsContainer, wingEvs, "Wing", "text-purple-400 bg-purple-500/10", "fa-feather-alt");
+    
+    const openEvs = (profileData.openEvents || []).filter(e => e.semester === sem).sort(sortFn);
+    renderEventList(openEventsContainer, openEvs, "Open", "text-orange-400 bg-orange-500/10", "fa-users");
+}
+
+function renderEventList(container, events, typeStr, iconColor, iconClass) {
+    if (events.length === 0) {
+        container.innerHTML = `<div class="text-center py-10 text-gray-500 text-sm">No ${typeStr} events attended this semester.</div>`;
+        return;
+    }
+    
+    const fmt = h => { const n = Number(h); return isNaN(n) ? "0" : (n % 1 === 0 ? String(n) : n.toFixed(1)); };
+    
+    container.innerHTML = events.map(ev => `
+        <div class="glass-card p-4 rounded-xl border border-white/5 flex items-center justify-between">
+            <div class="flex items-center gap-3 overflow-hidden">
+                <div class="w-10 h-10 rounded-full flex items-center justify-center shrink-0 ${iconColor}">
+                    <i class="fas ${iconClass} text-sm"></i>
+                </div>
+                <div class="truncate pr-2">
+                    <h5 class="text-sm font-semibold text-white truncate">${ev.eventName || 'Unknown Event'}</h5>
+                    <p class="text-xs text-gray-400 mt-0.5 truncate">${ev.date || ''}</p>
+                </div>
+            </div>
+            <div class="shrink-0 text-right">
+                <span class="text-lg font-bold ${Number(ev.hours) < 0 ? 'text-red-400' : 'text-white'} tracking-tight">${Number(ev.hours) > 0 ? '+' : ''}${fmt(ev.hours)}</span>
+                <span class="text-[10px] text-gray-500 block uppercase font-bold tracking-wider -mt-1">hrs</span>
+            </div>
+        </div>
+    `).join("");
+}
+
+// ============================================================
+// 7. QR SCANNER
+// ============================================================
+function initializeScanner() {
+    if (html5QrCode) return;
+    html5QrCode = new Html5Qrcode("reader");
+    html5QrCode.start({ facingMode: "environment" }, { fps: 10, qrbox: { width: 250, height: 250 } }, onScanSuccess)
+        .catch(() => showToast("error", "Camera Error", "Please allow camera permissions."));
+}
+
+function onScanSuccess(decodedText) {
     if (isScanning) return;
     isScanning = true;
-
-    // Pause scanning logic handled by isScanning flag
-    // html5QrCode.pause(); // Removed to prevent UI freeze
-
     processAttendance(decodedText)
-        .then((result) => {
-            // ERROR FIX: If result is false, it means we silently ignored a bad QR/frame.
-            // Reset immediately so we can try the next frame suitable.
-            if (result === false) {
-                isScanning = false;
-                return;
-            }
-
-            setTimeout(() => {
-                isScanning = false;
-                // Resume flag only
-            }, 3000);
-        })
-        .catch((err) => {
-            console.error("Attendance Process Error:", err);
+        .then(r => { if (r === false) { isScanning = false; return; } setTimeout(() => { isScanning = false; }, 3000); })
+        .catch(err => {
             isScanning = false;
-            // Resume immediately on error so user can retry
             showLoader(false);
-
-            if (err.message && err.message.includes("already marked")) {
-                showModal('duplicate', 'Chill Broooo 🥱', 'Attendance already marked.');
-            } else if (err.message && (err.message.includes("Location mismatch") || err.message.includes("Device Limit") || err.message.includes("proxy"))) {
-                showModal('error', 'No Proxy Allowed 🤨', err.message);
-            } else {
-                showModal('error', 'Attendance Failed', err.message || "Unknown Error");
-            }
+            const msg = err.message || "Unknown error";
+            if (msg.includes("already") || err.status === 409) showModal("duplicate", "Chill Broooo 🥱", "Attendance already marked.");
+            else if (msg.includes("away") || msg.includes("Location"))  showModal("error", "Too Far Away 📍", msg);
+            else if (msg.includes("device") || msg.includes("proxy"))   showModal("error", "No Proxy Allowed 🤨", msg);
+            else showModal("error", "Attendance Failed", msg);
         });
 }
 
 async function processAttendance(qrText) {
-    // 1. Parsing and Validation
+    // 1. Parse QR
     let qrData;
-    try {
-        qrData = JSON.parse(qrText);
-    } catch (e) {
-        // ERROR FIX: Silent fail for invalid JSON (e.g. partial scan, background text)
-        // Matches Android "silent retry" behavior
-        console.warn("Silently ignoring invalid QR format:", e);
-        return false;
+    try { qrData = JSON.parse(qrText); }
+    catch (_) { console.warn("Invalid QR frame, ignoring."); return false; }
+
+    if (!qrData.sessionId || !qrData.timestamp || !qrData.validationToken || !qrData.eventId) {
+        console.warn("Incomplete QR, ignoring."); return false;
     }
 
-    // Validate Schema
-    if (!qrData.sessionId || !qrData.timestamp || !qrData.validationToken) {
-        // ERROR FIX: Silent fail for non-attendance QRs
-        console.warn("Silently ignoring incomplete QR data");
-        return false;
-    }
+    // 2. Client-side freshness pre-check (saves a network roundtrip on stale QRs)
+    if (Date.now() - qrData.timestamp > 8000) throw new Error("QR Code Expired. Please scan a fresh code.");
 
-    // Validate Timestamp (8 seconds window to match Android)
-    const now = Date.now();
-    if (now - qrData.timestamp > 8000) {
-        throw new Error("QR Code Expired. Please scan a fresh code.");
-    }
+    // 3. Get GPS (client-side — the raw coords are sent to the server for authoritative geofence check)
+    showLoader(true, "Getting location...");
+    const pos = await getCurrentPosition();
+    showLoader(true, "Requesting challenge...");
 
-    // 2. Location Check
-    showLoader(true, "Checking Location...");
-    const position = await getCurrentPosition();
-    showLoader(false); // Hide loader but keep processing
+    // 4. Request a per-scan challenge nonce from server
+    const { nonce } = await cf("ios_getAttendanceChallenge", { rollNumber: currentRollNumber, eventId: qrData.eventId });
 
-    // Fetch Event Location
-    const eventRef = doc(db, "NSS_Events_Attendence", qrData.eventId); // Note: Correct spelling based on repo
-    const eventSnap = await getDoc(eventRef);
+    // 5. Sign the nonce (private key stays in browser)
+    const kp        = await loadOrGenerateKeyPair();
+    const signature = await signNonce(kp.privateKey, nonce);
 
-    if (!eventSnap.exists()) throw new Error("Event not found.");
-
-    const eventData = eventSnap.data();
-    if (!eventData.isLive && eventData.isLive !== undefined) throw new Error("This event is not live.");
-
-    // ---------------------------------------------------------
-    // 2.1 Device Reuse Check (Prevent Multi-Login Proxy)
-    // ---------------------------------------------------------
-    if (eventData.attendees && Array.isArray(eventData.attendees)) {
-        // NOTE: Use camelCase field names
-        const alreadyUsed = eventData.attendees.some(att => att.deviceId === virtualDeviceId);
-
-        // Exception: If the SAME user is retrying, we don't block on device ID here. 
-        // We let the "Attendance already marked" check (below) handle it for better UX.
-        // We only block if device matches BUT user is different.
-        const deviceUsedByOther = eventData.attendees.some(att =>
-            att.deviceId === virtualDeviceId && att.rollNumber !== currentRollNumber
-        );
-
-        if (deviceUsedByOther) {
-            throw new Error("This device has already been used by another student.");
-        }
-    }
-
-    // Use stored location or fallback (simulated logic: assumes Admin set it)
-    // NOTE: Use camelCase field names matching Android
-    if (eventData.attendanceLocationLatitude && eventData.attendanceLocationLongitude) {
-        const dist = getDistanceFromLatLonInKm(
-            position.coords.latitude, position.coords.longitude,
-            eventData.attendanceLocationLatitude, eventData.attendanceLocationLongitude
-        );
-
-        // 100 meters = 0.1 km
-        if (dist > 0.1) {
-            throw new Error(`Location mismatch. You are ${Math.round(dist * 1000)}m away.`);
-        }
-    }
-
-    // 3. Mark Attendance
-    const attendeeRef = doc(db, `NSS_Events_Attendence/${qrData.eventId}/attendance/${currentRollNumber}`);
-
-    // Check if already marked
-    const attendeeSnap = await getDoc(attendeeRef);
-    if (attendeeSnap.exists()) {
-        throw new Error("Attendance already marked for this event.");
-    }
-
-    // Fetch Admin Name
-    let adminName = "Admin";
-    try {
-        const adminSnap = await getDoc(doc(db, "users", qrData.adminId));
-        if (adminSnap.exists()) {
-            adminName = adminSnap.data().name || adminSnap.data().displayName || "Admin";
-        }
-    } catch (e) { console.warn("Could not fetch admin name", e); }
-
-    // 3. Use WriteBatch for Atomic Updates
-    const batch = writeBatch(db);
-
-    // NOTE: Must match Android 'AttendeeRecord' field names (camelCase)
-    const attendeeData = {
-        rollNumber: currentRollNumber,
-        name: currentUserName || "Unknown",
-        scanTimestamp: new Date(),
-        scannedFrom: {
-            adminRollNumber: qrData.adminId,
-            adminName: adminName
-        },
-        deviceId: virtualDeviceId,
-        scanLocation: new GeoPoint(position.coords.latitude, position.coords.longitude),
-        manualEntry: false
-    };
-
-    // 3.1 Create Attendee Record
-    batch.set(attendeeRef, attendeeData);
-
-    // 3.2 Update Event (Atomic)
-    batch.update(eventRef, {
-        attendees: arrayUnion(attendeeData),
-        totalMarked: increment(1)
+    // 6. Send everything to the server — server does: signature verify, event check,
+    //    live check, geofence, duplicate check, device re-use check, then writes to Firestore.
+    showLoader(true, "Marking attendance...");
+    const result = await cf("ios_markAttendance", {
+        rollNumber:      currentRollNumber,
+        eventId:         qrData.eventId,
+        signatureBase64: signature,
+        latitude:        pos.coords.latitude,
+        longitude:       pos.coords.longitude,
+        attendeeName:    currentUserName || "Unknown",
+        qrTimestamp:     qrData.timestamp,
     });
 
-    // 3.3 Update User Stats
-    const hours = eventData.hours || 0;
-    const userUpdateRef = doc(db, "users", currentRollNumber);
-    batch.update(userUpdateRef, {
-        eventsAttended: increment(1),
-        hours: increment(hours),
-        eventsList: arrayUnion(qrData.eventId)
-    });
+    showLoader(false);
+    showModal("success", "Attendance Marked ✅", result.message || "Verified and recorded by server.");
 
-    // Commit all changes
-    await batch.commit();
-
-    showModal('success', 'Attendance Marked', `Attendance Successfully marked for ${eventData.eventName || 'Event'}`);
+    // Refresh profile in background so hours update without re-login
+    cf("ios_getProfile", { rollNumber: currentRollNumber })
+        .then(p => { profileData = p; renderProfile(p); })
+        .catch(() => {});
 }
 
+// ============================================================
+// 8. UTILITIES
+// ============================================================
+function getCurrentPosition() {
+    return new Promise((res, rej) => {
+        if (!navigator.geolocation) { rej(new Error("Geolocation not supported.")); return; }
+        navigator.geolocation.getCurrentPosition(res,
+            () => navigator.geolocation.getCurrentPosition(res,
+                () => rej(new Error("Location permission denied. Please enable location services.")),
+                { enableHighAccuracy: false, timeout: 10000 }
+            ), { enableHighAccuracy: true, timeout: 10000 }
+        );
+    });
+}
 
-// ==========================================
-// 4. UTILITIES
-// ==========================================
+function switchView(v) {
+    loginView.classList.toggle("hidden", v !== "login");
+    scannerView.classList.toggle("hidden", v !== "scanner");
+    dashboardView.classList.toggle("hidden", v !== "dashboard");
+    eventsView.classList.toggle("hidden", v !== "events");
 
-function switchView(viewName) {
-    if (viewName === 'login') {
-        loginView.classList.remove('hidden');
-        scannerView.classList.add('hidden');
+    if (v === "login" || v === "events") {
+        topNav.classList.add("hidden");
     } else {
-        loginView.classList.add('hidden');
-        scannerView.classList.remove('hidden');
+        topNav.classList.remove("hidden");
+        
+        if (v === "dashboard") {
+            navDashboard.classList.remove("text-gray-400", "hover:text-gray-200");
+            navDashboard.classList.add("text-primary");
+            navScanner.classList.remove("text-primary");
+            navScanner.classList.add("text-gray-400", "hover:text-gray-200");
+            navSelector.style.transform = "translateX(0)";
+            
+            if (html5QrCode && html5QrCode.getState() === 2 /* SCANNING */) {
+                html5QrCode.pause();
+            }
+        } else if (v === "scanner") {
+            navScanner.classList.remove("text-gray-400", "hover:text-gray-200");
+            navScanner.classList.add("text-primary");
+            navDashboard.classList.remove("text-primary");
+            navDashboard.classList.add("text-gray-400", "hover:text-gray-200");
+            navSelector.style.transform = "translateX(100%)";
+            
+            if (!html5QrCode) {
+                // Initialize after a tiny delay so the DOM has time to render block dimensions
+                setTimeout(initializeScanner, 50);
+            } else if (html5QrCode.getState() === 3 /* PAUSED */) {
+                html5QrCode.resume();
+            }
+        }
     }
 }
 
-function showLoader(show, text = 'Loading...') {
-    loader.classList.toggle('hidden', !show);
-    loader.classList.toggle('flex', show);
-    document.getElementById('loaderText').innerText = text;
+function showLoader(show, text = "Loading...") {
+    loader.classList.toggle("hidden", !show);
+    loader.classList.toggle("flex", show);
+    const lt = document.getElementById("loaderText");
+    if (lt) lt.innerText = text;
+}
+
+modalBtn.addEventListener("click", () => {
+    modalBackdrop.classList.remove("opacity-100");
+    modalContent.classList.remove("scale-100", "opacity-100");
+    modalContent.classList.add("scale-95", "opacity-0");
+    setTimeout(() => { modal.classList.add("hidden"); }, 300);
+});
+
+function showModal(type, title, message) {
+    modal.classList.remove("hidden");
+    void modal.offsetWidth;
+    modalBackdrop.classList.add("opacity-100");
+    modalContent.classList.remove("scale-95", "opacity-0");
+    modalContent.classList.add("scale-100", "opacity-100");
+    if (modalTitle)   modalTitle.innerText   = title;
+    if (modalMessage) modalMessage.innerText = message;
+    if (modalIconBox) {
+        modalIconBox.className = "w-20 h-20 rounded-full mx-auto flex items-center justify-center mb-6 shadow-lg";
+        const c = type === "success"   ? ["bg-green-500/20","text-green-500","fas fa-check text-4xl"]
+                : type === "duplicate" ? ["bg-yellow-500/20","text-yellow-500","fas fa-hand-paper text-4xl"]
+                :                       ["bg-red-500/20","text-red-500","fas fa-times text-4xl"];
+        modalIconBox.classList.add(c[0], c[1]);
+        if (modalIcon) modalIcon.className = c[2];
+    }
 }
 
 function showToast(type, title, message) {
-    const toast = document.getElementById('toast');
-    const icon = document.getElementById('toastIcon');
-    const titleEl = document.getElementById('toastTitle');
-    const msgEl = document.getElementById('toastMessage');
-
-    // Reset classes
-    toast.className = `fixed top-24 left-1/2 -translate-x-1/2 w-[90%] max-w-sm p-4 rounded-2xl glass-card border transform transition-all duration-300 z-[90] flex items-start gap-3 shadow-2xl translate-y-0 opacity-100`;
-
-    if (type === 'success') {
-        toast.classList.add('border-green-500/20');
-        icon.className = 'w-8 h-8 rounded-full flex items-center justify-center shrink-0 mt-0.5 bg-green-500/20 text-green-400';
-        icon.innerHTML = '<i class="fas fa-check"></i>';
-        titleEl.classList.add('text-green-400');
-    } else {
-        toast.classList.add('border-red-500/20');
-        icon.className = 'w-8 h-8 rounded-full flex items-center justify-center shrink-0 mt-0.5 bg-red-500/20 text-red-400';
-        icon.innerHTML = '<i class="fas fa-exclamation"></i>';
-        titleEl.classList.add('text-red-400');
-    }
-
-    titleEl.innerText = title;
-    msgEl.innerText = message;
-
-    // Auto hide
-    setTimeout(() => {
-        toast.classList.remove('translate-y-0', 'opacity-100');
-        toast.classList.add('-translate-y-full', 'opacity-0');
-    }, 4000);
+    const toast = document.getElementById("toast");
+    const icon  = document.getElementById("toastIcon");
+    const te    = document.getElementById("toastTitle");
+    const me    = document.getElementById("toastMessage");
+    if (!toast) return;
+    toast.className = "fixed bottom-10 left-1/2 -translate-x-1/2 w-[90%] max-w-sm p-4 rounded-2xl glass-card border transform transition-all duration-300 z-[90] flex items-start gap-3 shadow-2xl translate-y-0 opacity-100";
+    const ok = type === "success";
+    toast.classList.add(ok ? "border-green-500/20" : "border-red-500/20");
+    if (icon) { icon.className = `w-8 h-8 rounded-full flex items-center justify-center shrink-0 mt-0.5 ${ok ? "bg-green-500/20 text-green-400" : "bg-red-500/20 text-red-400"}`; icon.innerHTML = `<i class="fas fa-${ok ? "check" : "exclamation"}"></i>`; }
+    if (te)   { te.className = `font-semibold ${ok ? "text-green-400" : "text-red-400"}`; te.innerText = title; }
+    if (me)   me.innerText = message;
+    setTimeout(() => { toast.classList.add("translate-y-[150%]", "opacity-0"); }, 4000);
 }
 
-// Promisified Geolocation
-// Promisified Geolocation (High Accuracy -> Fallback to Low Accuracy)
-function getCurrentPosition() {
-    return new Promise((resolve, reject) => {
-        if (!navigator.geolocation) {
-            reject(new Error("Geolocation is not supported by this browser."));
-            return;
-        }
-
-        const optionsHigh = { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 };
-        const optionsLow = { enableHighAccuracy: false, timeout: 10000, maximumAge: 0 };
-
-        // Try High Accuracy First
-        navigator.geolocation.getCurrentPosition(
-            resolve,
-            (err) => {
-                console.warn("High accuracy location failed, trying low accuracy...", err);
-                // Fallback to Low Accuracy
-                navigator.geolocation.getCurrentPosition(
-                    resolve,
-                    (errLow) => {
-                        console.error("Low accuracy also failed", errLow);
-                        reject(new Error("Location permission denied or unavailable. Please ensure 'Location Services' are ON in Windows Settings."));
-                    },
-                    optionsLow
-                );
-            },
-            optionsHigh
-        );
-    });
-}
-
-function getDistanceFromLatLonInKm(lat1, lon1, lat2, lon2) {
-    var R = 6371; // Radius of the earth in km
-    var dLat = deg2rad(lat2 - lat1);  // deg2rad below
-    var dLon = deg2rad(lon2 - lon1);
-    var a =
-        Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-        Math.cos(deg2rad(lat1)) * Math.cos(deg2rad(lat2)) *
-        Math.sin(dLon / 2) * Math.sin(dLon / 2)
-        ;
-    var c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    var d = R * c; // Distance in km
-    return d;
-}
-
-function deg2rad(deg) {
-    return deg * (Math.PI / 180);
-}
-
-// ==========================================
-// 5. FINGERPRINTING LOGIC (STICKY UUID)
-// ==========================================
-
-function generateDeviceFingerprint() {
-    return getStickyDeviceId();
-}
-
-/**
- * Gets or creates a persistent "Sticky" Device ID.
- * Uses both localStorage and Cookies for redundancy.
- * If one is cleared, it self-heals from the other.
- */
-function getStickyDeviceId() {
-    const STORAGE_KEY = 'nss_device_uuid';
-    const COOKIE_NAME = 'nss_device_uuid';
-    const COOKIE_DAYS = 365;
-
-    // Helper to get cookie
-    function getCookie(name) {
-        const value = `; ${document.cookie}`;
-        const parts = value.split(`; ${name}=`);
-        if (parts.length === 2) return parts.pop().split(';').shift();
-        return null;
-    }
-
-    // Helper to set cookie
-    function setCookie(name, value, days) {
-        let expires = "";
-        if (days) {
-            const date = new Date();
-            date.setTime(date.getTime() + (days * 24 * 60 * 60 * 1000));
-            expires = "; expires=" + date.toUTCString();
-        }
-        document.cookie = name + "=" + (value || "") + expires + "; path=/; SameSite=Strict";
-    }
-
-    // Helper to generate UUID
-    function generateUUID() {
-        if (typeof crypto !== 'undefined' && crypto.randomUUID) {
-            return crypto.randomUUID();
-        }
-        // Fallback for older browsers
-        return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
-            var r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
-            return v.toString(16);
-        });
-    }
-
-    // 1. Try to get from storage
-    let localId = localStorage.getItem(STORAGE_KEY);
-    let cookieId = getCookie(COOKIE_NAME);
-    let finalId = null;
-
-    // 2. Logic to Sync/Heal
-    if (localId && cookieId) {
-        // Best case: Both exist. Use local.
-        if (localId !== cookieId) {
-            // Weird mismatch? Trust local (arbitrary choice, but keeps it stable)
-            setCookie(COOKIE_NAME, localId, COOKIE_DAYS);
-        }
-        finalId = localId;
-    } else if (localId && !cookieId) {
-        // Cookie cleared? Heal it from local.
-        setCookie(COOKIE_NAME, localId, COOKIE_DAYS);
-        finalId = localId;
-    } else if (!localId && cookieId) {
-        // LocalStorage cleared? Heal it from cookie.
-        localStorage.setItem(STORAGE_KEY, cookieId);
-        finalId = cookieId;
-    } else {
-        // Both missing? New Device.
-        finalId = generateUUID();
-        localStorage.setItem(STORAGE_KEY, finalId);
-        setCookie(COOKIE_NAME, finalId, COOKIE_DAYS);
-    }
-
-    return 'web-uuid-' + finalId;
-}
-
-// Simple string hashing function (DJB2 variant)
-function simpleHash(str) {
-    let hash = 5381;
-    for (let i = 0; i < str.length; i++) {
-        hash = ((hash << 5) + hash) + str.charCodeAt(i); /* hash * 33 + c */
-    }
-    // Convert to unsigned 32-bit integer hex string
-    return (hash >>> 0).toString(16);
-}
+// (PDF generation logic has been extracted to pdf_export.js)

@@ -15,6 +15,10 @@
     <!-- Icons -->
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
 
+    <!-- jsPDF & AutoTable -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.31/jspdf.plugin.autotable.min.js"></script>
+
     <!-- Custom Config -->
     <script>
         tailwind.config = {
@@ -36,7 +40,7 @@
     <link rel="stylesheet" href="style.css">
 </head>
 
-<body class="bg-dark text-white min-h-screen relative overflow-hidden">
+<body class="bg-dark text-white h-[100dvh] relative overflow-hidden">
 
     <!-- Background Decoration -->
     <div class="fixed top-0 left-0 w-full h-full overflow-hidden -z-10 pointer-events-none">
@@ -49,7 +53,7 @@
     </div>
 
     <!-- Main Container -->
-    <div id="app" class="relative z-10 min-h-screen flex flex-col">
+    <div id="app" class="relative z-10 h-[100dvh] flex flex-col">
 
         <!-- Header -->
         <header
@@ -70,11 +74,20 @@
             </button>
         </header>
 
+        <!-- Top Navigation (Tabs) -->
+        <nav id="topNav" class="hidden sticky top-[88px] z-40 bg-dark/90 backdrop-blur-md border-b border-white/5 py-4 px-6">
+            <div class="max-w-md mx-auto flex bg-black/40 p-1.5 rounded-xl border border-white/10 relative shadow-inner">
+                <div id="navSelector" class="absolute top-1.5 bottom-1.5 left-1.5 w-[calc(50%-6px)] bg-primary/20 border border-primary/50 rounded-lg transition-transform duration-300 ease-out translate-x-0"></div>
+                <button id="navDashboard" class="flex-1 py-2 text-sm font-semibold text-primary z-10 transition-colors">Dashboard</button>
+                <button id="navScanner" class="flex-1 py-2 text-sm font-semibold text-gray-400 hover:text-gray-200 z-10 transition-colors">Scanner</button>
+            </div>
+        </nav>
+
         <!-- Content Area -->
-        <main class="flex-1 flex flex-col p-6 max-w-md mx-auto w-full justify-center">
+        <main class="flex-1 flex flex-col p-6 max-w-md mx-auto w-full overflow-y-auto custom-scrollbar relative">
 
             <!-- Login View -->
-            <div id="loginView" class="fade-in space-y-6">
+            <div id="loginView" class="fade-in space-y-6 my-auto">
                 <div class="text-center space-y-2 mb-8">
                     <h2
                         class="text-3xl font-bold bg-gradient-to-br from-white to-gray-400 bg-clip-text text-transparent">
@@ -111,7 +124,7 @@
             </div>
 
             <!-- Scanner View -->
-            <div id="scannerView" class="hidden fade-in flex-col h-full">
+            <div id="scannerView" class="hidden fade-in flex-col h-full my-auto">
                 <!-- User Info Card -->
                 <div
                     class="glass-card px-6 py-3 rounded-full border border-white/10 flex items-center gap-4 mb-6 w-fit mx-auto bg-white/5">
@@ -156,6 +169,102 @@
                 </div>
             </div>
 
+            <!-- Dashboard View -->
+            <div id="dashboardView" class="hidden fade-in flex-col h-full space-y-6 pt-2 pb-10">
+                
+                <!-- Total Hours Highlight -->
+                <div class="glass-card p-8 rounded-3xl border border-white/10 text-center relative overflow-hidden bg-gradient-to-b from-white/5 to-transparent shadow-2xl">
+                     <div class="absolute -right-10 -top-10 w-40 h-40 bg-primary/20 rounded-full blur-[50px]"></div>
+                     <div class="absolute -left-10 -bottom-10 w-40 h-40 bg-blue-600/20 rounded-full blur-[50px]"></div>
+                     
+                     <p class="text-gray-400 text-sm font-medium mb-2 relative z-10">Total Earned Hours</p>
+                     <h3 id="stat-total" class="text-6xl font-bold text-white tracking-tight relative z-10">0</h3>
+                     <p class="text-primary text-xs mt-3 font-semibold tracking-wider uppercase relative z-10">Sem 1 & Sem 2 Combined</p>
+                </div>
+
+                <!-- Grid Stats -->
+                <div class="grid grid-cols-2 gap-4">
+                    <div id="card-sem1" class="glass-card p-5 rounded-2xl border border-white/10 flex flex-col gap-2 relative overflow-hidden cursor-pointer hover:bg-white/5 active:scale-95 transition-all">
+                        <div class="absolute -right-4 -top-4 w-16 h-16 bg-blue-500/10 rounded-full blur-xl pointer-events-none"></div>
+                        <i class="fas fa-calendar-alt text-blue-400 text-xl pointer-events-none"></i>
+                        <p class="text-gray-400 text-xs mt-1 font-medium tracking-wide pointer-events-none">Semester 1</p>
+                        <h4 id="stat-sem1" class="text-2xl font-bold text-white pointer-events-none">0 / 0</h4>
+                    </div>
+                    <div id="card-sem2" class="glass-card p-5 rounded-2xl border border-white/10 flex flex-col gap-2 relative overflow-hidden cursor-pointer hover:bg-white/5 active:scale-95 transition-all">
+                        <div class="absolute -right-4 -top-4 w-16 h-16 bg-green-500/10 rounded-full blur-xl pointer-events-none"></div>
+                        <i class="fas fa-calendar-check text-green-400 text-xl pointer-events-none"></i>
+                        <p class="text-gray-400 text-xs mt-1 font-medium tracking-wide pointer-events-none">Semester 2</p>
+                        <h4 id="stat-sem2" class="text-2xl font-bold text-white pointer-events-none">0 / 0</h4>
+                    </div>
+                    <div class="glass-card p-5 rounded-2xl border border-white/10 flex flex-col gap-2 relative overflow-hidden">
+                        <div class="absolute -right-4 -top-4 w-16 h-16 bg-purple-500/10 rounded-full blur-xl"></div>
+                        <i class="fas fa-feather-alt text-purple-400 text-xl"></i>
+                        <p class="text-gray-400 text-xs mt-1 font-medium tracking-wide">Wing Hours</p>
+                        <h4 id="stat-wing-hours" class="text-2xl font-bold text-white">0</h4>
+                    </div>
+                    <div class="glass-card p-5 rounded-2xl border border-white/10 flex flex-col gap-2 relative overflow-hidden">
+                        <div class="absolute -right-4 -top-4 w-16 h-16 bg-orange-500/10 rounded-full blur-xl"></div>
+                        <i class="fas fa-users text-orange-400 text-xl"></i>
+                        <p class="text-gray-400 text-xs mt-1 font-medium tracking-wide">Open Hours</p>
+                        <h4 id="stat-open-hours" class="text-2xl font-bold text-white">0</h4>
+                    </div>
+                </div>
+
+                <!-- Events Attended -->
+                <div class="glass-card p-5 rounded-2xl border border-white/10 flex items-center justify-between">
+                    <div class="flex items-center gap-3">
+                        <div class="w-12 h-12 rounded-full bg-white/5 flex items-center justify-center border border-white/5">
+                            <i class="fas fa-clipboard-list text-gray-300 text-lg"></i>
+                        </div>
+                        <div>
+                            <p class="text-sm font-semibold text-white">Events Attended</p>
+                            <p class="text-xs text-gray-400 mt-0.5">Out of total events</p>
+                        </div>
+                    </div>
+                    <h4 id="stat-events" class="text-2xl font-bold text-white">0 / 0</h4>
+                </div>
+            </div>
+
+            <!-- Events View -->
+            <div id="eventsView" class="hidden fade-in flex-col min-h-full pt-2 pb-10">
+                <div class="flex items-center gap-4 mb-6 sticky -top-6 bg-dark/95 backdrop-blur-md z-10 py-2 border-b border-white/5 -mx-6 px-6">
+                    <button id="eventsBackBtn" class="w-10 h-10 rounded-full bg-white/5 hover:bg-white/10 flex items-center justify-center transition-all border border-white/5 shrink-0">
+                        <i class="fas fa-arrow-left text-gray-300"></i>
+                    </button>
+                    <div>
+                        <h2 id="eventsViewTitle" class="text-xl font-bold text-white">Semester Events</h2>
+                        <p class="text-xs text-gray-400">Detailed History</p>
+                    </div>
+                    <div class="flex-1"></div>
+                    <button id="downloadPdfBtn" class="w-10 h-10 rounded-full bg-white/5 hover:bg-white/10 flex items-center justify-center transition-all border border-white/5 shrink-0" title="Download Report">
+                        <i class="fas fa-download text-primary"></i>
+                    </button>
+                </div>
+
+                <!-- Events Lists Container -->
+                <div class="space-y-8 mt-2">
+                    <!-- Wing Events Section -->
+                    <div>
+                        <h3 class="text-sm font-semibold text-purple-400 uppercase tracking-wider mb-3 px-1 flex items-center gap-2">
+                            <i class="fas fa-feather-alt"></i> Wing Events
+                        </h3>
+                        <div id="wingEventsContainer" class="space-y-3">
+                            <!-- Injected by JS -->
+                        </div>
+                    </div>
+                    
+                    <!-- Open Events Section -->
+                    <div>
+                        <h3 class="text-sm font-semibold text-orange-400 uppercase tracking-wider mb-3 px-1 flex items-center gap-2">
+                            <i class="fas fa-users"></i> Open Events
+                        </h3>
+                        <div id="openEventsContainer" class="space-y-3">
+                            <!-- Injected by JS -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+
         </main>
     </div>
 
@@ -168,7 +277,7 @@
 
     <!-- Toast Component -->
     <div id="toast"
-        class="fixed top-24 left-1/2 -translate-x-1/2 w-[90%] max-w-sm p-4 rounded-2xl glass-card border border-white/10 transform -translate-y-full opacity-0 transition-all duration-300 z-[90] flex items-start gap-3 shadow-2xl">
+        class="fixed bottom-10 left-1/2 -translate-x-1/2 w-[90%] max-w-sm p-4 rounded-2xl glass-card border border-white/10 transform translate-y-[150%] opacity-0 transition-all duration-300 z-[90] flex items-start gap-3 shadow-2xl">
         <div id="toastIcon" class="w-8 h-8 rounded-full flex items-center justify-center shrink-0 mt-0.5"></div>
         <div>
             <h4 id="toastTitle" class="font-semibold text-sm"></h4>
